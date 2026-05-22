@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>U.S. Air Force Aircraft Losses — Vietnam War 1962–1973</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+</head>
+<body>
+  <header>
+    <div id="header-left">
+      <h1>U.S. Air Force Aircraft Losses — Vietnam War 1962–1973</h1>
+      <div id="stats-strip">
+        <div class="stat-pill"><span class="label">Total Losses</span><span id="stat-total" class="value">—</span></div>
+        <div class="stat-pill"><span class="label">Known Coords</span><span id="stat-coords" class="value">—</span></div>
+        <div class="stat-pill kia"><span class="label">KIA</span><span id="stat-kia" class="value">—</span></div>
+        <div class="stat-pill recovered"><span class="label">Recovered</span><span id="stat-recovered" class="value">—</span></div>
+        <div class="stat-pill mia"><span class="label">MIA</span><span id="stat-mia" class="value">—</span></div>
+      </div>
+    </div>
+    <div id="header-byline">Data Visualization by<br>Luka Toprek</div>
+  </header>
+
+  <main class="grid">
+    <section class="panel" id="map-panel">
+      <h2>Geographic Distribution</h2>
+      <p class="subtitle">Each dot marks a recorded crash site (only losses with known coordinates are shown). Hit Play to animate losses chronologically, drag the scrubber to jump to a year, or brush the timeline below to filter all charts.</p>
+      <div id="map-container"></div>
+      <div id="map-controls">
+        <button id="btn-play">&#9654; Play</button>
+        <button id="btn-reset">&#8635; Reset</button>
+        <input type="range" id="year-scrubber" min="1962" max="1973" step="1" value="1962">
+        <span id="year-label">1962</span>
+      </div>
+    </section>
+
+    <section class="panel" id="line-panel">
+      <h2>Losses Per Year</h2>
+      <p class="subtitle">Annual loss totals 1962–1973. Drag to brush a year range and filter all charts and map dots simultaneously.</p>
+      <div id="line-container"></div>
+    </section>
+
+    <section class="panel" id="defense-panel">
+      <h2>Defense Type</h2>
+      <p class="subtitle">Primary cause of loss — top 10 threat systems. Click a bar to highlight matching losses on the map and across all charts.</p>
+      <div id="defense-sort-controls">
+        <button class="sort-btn active" data-sort="count-desc">Count ↓</button>
+        <button class="sort-btn" data-sort="count-asc">Count ↑</button>
+        <button class="sort-btn" data-sort="alpha">A–Z</button>
+      </div>
+      <div id="defense-container"></div>
+    </section>
+
+    <section class="panel" id="aircraft-panel">
+      <h2>Aircraft Type</h2>
+      <p class="subtitle">Top 10 airframes by total losses, stacked by pilot outcome. Click a segment to isolate that type and view the pilot status breakdown.</p>
+      <div id="aircraft-legend" class="chart-legend"></div>
+      <div id="aircraft-container"></div>
+    </section>
+
+    <section class="panel" id="pilot-panel">
+      <h2>Pilot Status</h2>
+      <p class="subtitle">Crew fate for all recorded losses. Click a bar to filter the map and other charts by outcome.</p>
+      <div id="pilot-container"></div>
+    </section>
+
+    <section class="panel" id="country-panel">
+      <h2>Loss by Country</h2>
+      <p class="subtitle">Losses by country of occurrence across the theater. Click a bar to show only those losses on the map.</p>
+      <div id="country-container"></div>
+    </section>
+
+  </main>
+
+  <div id="tooltip" class="tooltip"></div>
+  <div id="drilldown-panel" class="drilldown-panel"></div>
+
+  <script>
+  'use strict';
+
+  // ── Constants ────────────────────────────────────────────────
+  const ORDINAL_COLORS = [
+    '#C83828','#C07820','#A89420','#3070A0','#3A7840',
+    '#6E4090','#208880','#983E18','#285C8C','#8A8070'
+  ];
+  const STATUS_COLORS = {
+    KIA: '#C83828', Recovered: '#3070A0',
+    MIA: '#C07820', POW: '#6E4090', Unknown: '#8A8070'
+  };
+  const STATUSES = ['KIA', 'Recovered', 'MIA', 'POW'];
+
+  // ── Global state ─────────────────────────────────────────────
+  let allData      = [];
+  let brushedData  = null;        // null = no year filter active
+  let brushYears   = null;        // [y0, y1] when brush active — drives map dot visibility
+  // activeFilter = { field: 'defenseType'|'aircraftType'|'pilotStatus', value: string } | null
+  let activeFilter = null;
+  let currentSort  = 'count-desc';
+
+  // ── Tooltip (DOM-based, no innerHTML) ────────────────────────
+  const tipEl = document.getElementById('tooltip');
+
+  function showTip(event, rows) {
+    tipEl.textContent = '';
+    rows.forEach(([label, value]) => {
+      const row = document.createElement('div');
+      row.className = 'tip-row';
+      const l = document.createElement('span');
+      l.className = 'tip-label';
+      l.textContent = label;
+      const v = document.createElement('span');
+      v.textContent = String(value);
+      row.append(l, v);
+      tipEl.appendChild(row);
+    });
+    tipEl.style.display = 'block';
+    moveTip(event);
+  }
+
+  function showTipText(event, text) {
+    tipEl.textContent = text;
+    tipEl.style.display = 'block';
+    moveTip(event);
+  }
+
+  function moveTip(event) {
+    tipEl.style.left = Math.min(event.clientX + 14, window.innerWidth - 260) + 'px';
+    tipEl.style.top  = (event.clientY - 28) + 'px';
+  }
+
+  function hideTip() { tipEl.style.display = 'none'; }
+
+  // ============================================================
+  // SECTION 1 — DATA LOADING & CLEANING
+  // ============================================================
+  async function loadAndClean() {
+    const raw = await d3.csv('./Vietnam_USAF_Losses_Cleaned_Data.csv');
+
+    // Pre-scan to find modal MiG and AAA types for the catch-all rules
+    const migCounts = {}, aaaCounts = {};
+    raw.forEach(d => {
+      const v = (d.Defense_Type || '').toLowerCase();
+      if      (/mig-21|aa-missile/.test(v)) migCounts['MiG-21']     = (migCounts['MiG-21']     || 0) + 1;
+      else if (/mig-17/.test(v))            migCounts['MiG-17']     = (migCounts['MiG-17']     || 0) + 1;
+      if      (/85mm/.test(v))              aaaCounts['85mm AAA']   = (aaaCounts['85mm AAA']   || 0) + 1;
+      else if (/57mm/.test(v))              aaaCounts['57mm AAA']   = (aaaCounts['57mm AAA']   || 0) + 1;
+      else if (/37mm/.test(v))              aaaCounts['37mm AAA']   = (aaaCounts['37mm AAA']   || 0) + 1;
+      else if (/23mm/.test(v))              aaaCounts['23mm AAA']   = (aaaCounts['23mm AAA']   || 0) + 1;
+      else if (/12\.7mm/.test(v))           aaaCounts['12.7mm AAA'] = (aaaCounts['12.7mm AAA'] || 0) + 1;
+      else if (/50cal/.test(v))             aaaCounts['50cal AAA']  = (aaaCounts['50cal AAA']  || 0) + 1;
+    });
+
+    const topKey = obj => {
+      const entries = Object.entries(obj);
+      return entries.length ? entries.sort((a,b) => b[1]-a[1])[0][0] : null;
+    };
+    const modalMig = topKey(migCounts) || 'MiG-21';
+    const modalAaa = topKey(aaaCounts) || '37mm AAA';
+
+    return raw.map(d => {
+      const year = (d.Crash_Date && d.Crash_Date !== '_')
+        ? parseInt(d.Crash_Date.split('-')[0], 10) : null;
+      const lat = (d.Latitude  && d.Latitude  !== '') ? +d.Latitude  : null;
+      const lon = (d.Longitude && d.Longitude !== '') ? +d.Longitude : null;
+
+      return {
+        ...d,
+        year,
+        lat, lon,
+        hasCoords:   lat !== null && lon !== null && !isNaN(lat) && !isNaN(lon),
+        defenseType:  normalizeDefenseType(d.Defense_Type, modalMig, modalAaa),
+        pilotStatus:  normalizePilotStatus(d.Pilot_Status),
+        lossCountry:  normalizeLossCountry(d.Loss_Country),
+        aircraftType: normalizeAircraftType(d.Aircraft_Type),
+      };
+    });
+  }
+
+  // Rules applied in order as specified in Section 1
+  function normalizeDefenseType(raw, modalMig, modalAaa) {
+    const v = (raw || '').toLowerCase();
+    if (!v || v === '_')                                                    return 'Unknown';
+    if (/mig-21|aa-missile/.test(v))                                       return 'MiG-21';
+    if (/mig-17/.test(v))                                                  return 'MiG-17';
+    if (/mig/.test(v))                                                     return modalMig;
+    if (/\bsam\b/.test(v))                                                 return 'SAM';
+    if (/sa-7/.test(v))                                                    return 'SA-7';
+    if (/85mm/.test(v))                                                    return '85mm AAA';
+    if (/57mm/.test(v))                                                    return '57mm AAA';
+    if (/37mm/.test(v))                                                    return '37mm AAA';
+    if (/23mm/.test(v))                                                    return '23mm AAA';
+    if (/12\.7mm/.test(v))                                                 return '12.7mm AAA';
+    if (/50cal/.test(v))                                                   return '50cal AAA';
+    if (/\baaa\b/.test(v))                                                 return modalAaa;
+    if (/gunfire|small arms|automatic weapons|light gun|heavy gun/.test(v)) return 'Gunfire';
+    if (/mid-air|collision/.test(v))                                       return 'Mid-air Collision';
+    if (/own bomb/.test(v))                                                return 'Own Ordnance';
+    if (/combat associated/.test(v))                                       return 'Combat Associated';
+    return 'Unknown';
+  }
+
+  function normalizePilotStatus(raw) {
+    const v = (raw || '').trim();
+    if (/kia/i.test(v))       return 'KIA';
+    if (/^recover/i.test(v))  return 'Recovered';
+    if (/pow/i.test(v))       return 'POW';
+    if (/^mia$/i.test(v))     return 'MIA';
+    return 'Unknown';
+  }
+
+  function normalizeLossCountry(raw) {
+    const map = {
+      SVn: 'South Vietnam', Svn: 'South Vietnam',
+      NVn: 'North Vietnam',
+      LS:  'Laos',
+      CMB: 'Cambodia',
+      THL: 'Thailand',
+      Sea: 'Over Sea',
+      HNN: 'Hainan',
+    };
+    const v = (raw || '').trim();
+    if (map[v])                            return map[v];
+    if (v === 'u' || v === '_' || v === '') return 'Unknown';
+    return v;
+  }
+
+  // Strip trailing variant letter(s) after the model number so all variants
+  // of the same airframe group together: F-105D/F/G → F-105, F-4C/D/E → F-4.
+  // Special cases applied after stripping.
+  function normalizeAircraftType(raw) {
+    if (!raw || raw === '_' || raw === '') return 'Unknown';
+    const base = raw.replace(/(\d)[A-Z]+$/, '$1').trim();
+    // RF-4 variants are recon-configured F-4 Phantoms — group with F-4
+    if (base === 'RF-4') return 'F-4';
+    return base;
+  }
+
+  // ============================================================
+  // SECTION 4.1 — SUMMARY STATS STRIP
+  // ============================================================
+  function updateStats(data) {
+    d3.select('#stat-total').text(data.length.toLocaleString());
+    d3.select('#stat-coords').text(data.filter(d => d.hasCoords).length.toLocaleString());
+    d3.select('#stat-kia').text(data.filter(d => d.pilotStatus === 'KIA').length.toLocaleString());
+    d3.select('#stat-recovered').text(data.filter(d => d.pilotStatus === 'Recovered').length.toLocaleString());
+    d3.select('#stat-mia').text(data.filter(d => d.pilotStatus === 'MIA').length.toLocaleString());
+  }
+
+  // ============================================================
+  // SECTION 4.2 — ANIMATED MAP
+  // ============================================================
+  function renderMap(data) {
+    const ctr = document.getElementById('map-container');
+    const W   = Math.max(ctr.clientWidth || 500, 300);
+
+    // Indochina bbox: lon 97-110°E, lat 8-24°N.
+    // Mercator y-span is larger than x-span (portrait region). We fit the full
+    // latitude range into H and accept extra longitude shown on left/right for context.
+    const LON_CENTER = 103.5, LAT_CENTER = 16;
+    const mercY = φ => Math.log(Math.tan(Math.PI / 4 + φ * Math.PI / 360));
+    const ySpan  = mercY(24) - mercY(8);   // 0.2914 rad — lat 8 to 24°N in Mercator y
+    // H = 0.68×W keeps the panel from dominating the layout while still fitting
+    // lat 8–24°N (ySpan ≈ 0.29 rad). Extra longitude (~27° total) shown left/right.
+    const H      = Math.round(W * 0.68);
+    const scale  = (H - 24) / ySpan;      // height-limited: full lat range fits with 12px padding
+
+    const svg = d3.select('#map-container').append('svg')
+      .attr('viewBox', `0 0 ${W} ${H}`)
+      .attr('preserveAspectRatio', 'xMidYMid meet')
+      .style('width', '100%').style('height', 'auto').style('display', 'block')
+      .style('opacity', 0);
+
+    const proj = d3.geoMercator()
+      .center([LON_CENTER, LAT_CENTER])
+      .scale(scale)
+      .translate([W / 2, H / 2]);
+
+    const pathFn = d3.geoPath().projection(proj);
+
+    // Country numeric codes for Cambodia (116), Laos (418), Vietnam (704), Thailand (764)
+    const SEA_IDS = new Set([116, 418, 704, 764]);
+
+    // Ocean background
+    svg.append('rect').attr('width', W).attr('height', H).attr('fill', '#6B8FA8');
+
+    const baseG    = svg.append('g').attr('class', 'base-countries');
+    const seaG     = svg.append('g').attr('class', 'sea-countries');
+    const bordersG = svg.append('g').attr('class', 'borders');
+    const dotsG    = svg.append('g').attr('class', 'dots');
+
+    const yearTxt = svg.append('text')
+      .attr('class', 'year-overlay')
+      .attr('x', W * 0.88).attr('y', H * 0.88)
+      .attr('text-anchor', 'middle').attr('dominant-baseline', 'middle')
+      .text('');
+
+    // Load basemap from CDN
+    d3.json('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json')
+      .then(world => {
+        const countries = topojson.feature(world, world.objects.countries);
+        const mesh      = topojson.mesh(world, world.objects.countries, (a, b) => a !== b);
+
+        // All countries in a dark neutral — only those inside the viewport will appear
+        // (SVG clips at boundary), giving context for China, Myanmar, Malaysia etc.
+        baseG.selectAll('path')
+          .data(countries.features)
+          .enter().append('path')
+            .attr('d', pathFn)
+            .attr('fill', '#B4A880').attr('stroke', 'none');
+
+        // SE Asia countries in a distinct highlight colour
+        seaG.selectAll('path')
+          .data(countries.features.filter(f => SEA_IDS.has(+f.id)))
+          .enter().append('path')
+            .attr('d', pathFn)
+            .attr('fill', '#8A9E68').attr('stroke', '#687850').attr('stroke-width', 0.8);
+
+        // Country border mesh for geographic context
+        bordersG.append('path').datum(mesh)
+          .attr('d', pathFn)
+          .attr('fill', 'none').attr('stroke', '#685848').attr('stroke-width', 0.5);
+
+        initAnimation(data.filter(d => d.hasCoords));
+        svg.transition().duration(800).delay(150).style('opacity', 1);
+      })
+      .catch(() => {
+        initAnimation(data.filter(d => d.hasCoords));
+        svg.transition().duration(800).style('opacity', 1);
+      });
+
+    // ── Animation ─────────────────────────────────
+    let geoData = [];
+    let animIdx = 0;
+    let playing = false;
+    let anim    = null;
+
+    const btnPlay  = document.getElementById('btn-play');
+    const btnReset = document.getElementById('btn-reset');
+    const scrubber = document.getElementById('year-scrubber');
+    const yrLabel  = document.getElementById('year-label');
+
+    function initAnimation(pts) {
+      geoData = pts
+        .filter(d => d.year !== null)
+        .sort((a, b) => new Date(a.Crash_Date) - new Date(b.Crash_Date));
+    }
+
+    // Add dots from index 0 up to (not including) upTo — dots remain permanently.
+    // Opacity at enter time is computed so brush/category filters are respected immediately.
+    function renderDots(upTo) {
+      // ENTER: new dots only; existing circles stay unchanged (no EXIT, no UPDATE position)
+      dotsG.selectAll('circle')
+        .data(geoData.slice(0, upTo), (d, i) => i)
+        .enter().append('circle')
+          .attr('cx', d => proj([d.lon, d.lat])[0])
+          .attr('cy', d => proj([d.lon, d.lat])[1])
+          .attr('r', 3.5).attr('fill', 'var(--color-red)')
+          .attr('opacity', d => computeDotOpacity(d))
+          .on('mouseover', (event, d) => showTip(event, [
+            ['Aircraft', d.Aircraft_Type || '—'],
+            ['Date',     d.Crash_Date    || '—'],
+            ['Defense',  d.defenseType],
+            ['Pilot',    d.pilotStatus],
+            ['Country',  d.lossCountry],
+          ]))
+          .on('mousemove', moveTip)
+          .on('mouseout',  hideTip);
+    }
+
+    const SPEED = 100; // events per real second → ~8-12 s for full dataset
+
+    function startPlay() {
+      if (animIdx >= geoData.length) return;
+      const startIdx   = animIdx;
+      let lastAnimYear = geoData[animIdx] ? geoData[animIdx].year : null;
+
+      anim = d3.timer(elapsed => {
+        const next = Math.min(Math.round(startIdx + elapsed * SPEED / 1000), geoData.length);
+        if (next > animIdx) {
+          animIdx = next;
+          renderDots(animIdx);
+          const cur = geoData[animIdx - 1];
+          if (cur) {
+            const yr = String(cur.year || '');
+            yearTxt.text(yr);
+            yrLabel.textContent = yr;
+            scrubber.value = cur.year;
+
+            // Update all charts once per year change during animation
+            if (cur.year !== lastAnimYear) {
+              lastAnimYear = cur.year;
+              updateAllCharts(allData.filter(d => d.year !== null && d.year <= cur.year));
+            }
+          }
+        }
+        if (animIdx >= geoData.length) {
+          yearTxt.text('');
+          btnPlay.textContent = '▶ Play';
+          playing = false;
+          anim.stop();
+          // Restore to brush-filtered or full data when playback ends
+          updateAllCharts(brushedData || allData);
+        }
+      });
+    }
+
+    function stopPlay() {
+      if (anim) anim.stop();
+      playing = false;
+      btnPlay.textContent = '▶ Play';
+    }
+
+    btnPlay.addEventListener('click', () => {
+      if (playing) { stopPlay(); }
+      else         { playing = true; btnPlay.textContent = '⏸ Pause'; startPlay(); }
+    });
+
+    btnReset.addEventListener('click', () => {
+      stopPlay();
+      animIdx = 0;
+      dotsG.selectAll('circle').remove();
+      yearTxt.text('');
+      yrLabel.textContent = '1962';
+      scrubber.value = 1962;
+      updateAllCharts(brushedData || allData);
+    });
+
+    scrubber.addEventListener('input', () => {
+      const yr = +scrubber.value;
+      yrLabel.textContent = yr;
+      // Find last index where year <= yr (data is sorted chronologically)
+      let idx = 0;
+      for (let i = 0; i < geoData.length; i++) {
+        if ((geoData[i].year || 0) <= yr) idx = i + 1; else break;
+      }
+      animIdx = idx;
+      dotsG.selectAll('circle').remove();
+      renderDots(animIdx);
+      yearTxt.text(yr);
+      updateAllCharts(allData.filter(d => d.year !== null && d.year <= yr));
+    });
+  }
+
+  // ============================================================
+  // SECTION 4.3 — LINE CHART WITH BRUSH
+  // ============================================================
+  function renderLineChart(data) {
+    const ctr    = document.getElementById('line-container');
+    const margin = { top: 20, right: 16, bottom: 28, left: 40 };
+    const W      = Math.max((ctr.clientWidth || 360) - margin.left - margin.right, 100);
+    const H      = 220 - margin.top - margin.bottom;
+
+    const svg = d3.select('#line-container').append('svg')
+      .attr('viewBox', `0 0 ${W + margin.left + margin.right} ${H + margin.top + margin.bottom}`)
+      .attr('preserveAspectRatio', 'xMidYMid meet')
+      .style('width', '100%').style('height', 'auto');
+
+    const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+    // Aggregate losses per year (only records with valid year)
+    const byYear = d3.rollup(data.filter(d => d.year !== null), v => v.length, d => d.year);
+    const pts    = d3.range(1962, 1974).map(y => ({ year: y, count: byYear.get(y) || 0 }));
+
+    const xSc = d3.scaleLinear().domain([1962, 1973]).range([10, W - 10]);
+    const ySc = d3.scaleLinear()
+      .domain([0, d3.max(pts, d => d.count) * 1.12])
+      .range([H, 0]).nice();
+
+    // Gradient for area fill
+    const defs = svg.append('defs');
+    const grad = defs.append('linearGradient')
+      .attr('id', 'area-grad').attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', 1);
+    grad.append('stop').attr('offset', '0%')
+      .attr('stop-color', '#A52515').attr('stop-opacity', 0.45);
+    grad.append('stop').attr('offset', '100%')
+      .attr('stop-color', '#A52515').attr('stop-opacity', 0);
+
+    // Horizontal grid lines
+    g.append('g').attr('class', 'grid-lines').selectAll('line')
+      .data(ySc.ticks(5)).enter().append('line')
+        .attr('class', 'grid-line')
+        .attr('x1', 0).attr('x2', W)
+        .attr('y1', d => ySc(d)).attr('y2', d => ySc(d));
+
+    // Area + line
+    const areaFn = d3.area()
+      .x(d => xSc(d.year)).y0(H).y1(d => ySc(d.count))
+      .curve(d3.curveCatmullRom);
+    const lineFn = d3.line()
+      .x(d => xSc(d.year)).y(d => ySc(d.count))
+      .curve(d3.curveCatmullRom);
+
+    g.append('path').datum(pts).attr('fill', 'url(#area-grad)').attr('d', areaFn);
+    g.append('path').datum(pts)
+      .attr('fill', 'none').attr('stroke', '#A52515').attr('stroke-width', 2).attr('d', lineFn);
+
+    // Data point circles with hover tooltips
+    g.selectAll('.yr-dot').data(pts).enter().append('circle')
+      .attr('class', 'yr-dot')
+      .attr('cx', d => xSc(d.year)).attr('cy', d => ySc(d.count))
+      .attr('r', 4).attr('fill', '#A52515')
+      .attr('stroke', '#D4C6A6').attr('stroke-width', 1.5)
+      .on('mouseover', (event, d) => showTipText(event, `${d.year} — ${d.count} losses`))
+      .on('mousemove', moveTip)
+      .on('mouseout',  hideTip);
+
+    // Axes
+    g.append('g').attr('class', 'axis').attr('transform', `translate(0,${H})`)
+      .call(d3.axisBottom(xSc).tickValues(d3.range(1962, 1974)).tickFormat(d3.format('d')))
+      .selectAll('text')
+        .attr('transform', null).attr('text-anchor', 'middle')
+        .attr('dx', '0').attr('dy', '1.0em').style('font-size', '16px');
+
+    g.append('g').attr('class', 'axis').call(d3.axisLeft(ySc).ticks(5));
+
+    // BRUSH on the x-axis area — drives cross-chart filtering AND map dot visibility
+    const brushG = g.append('g').attr('class', 'brush');
+    const brush  = d3.brushX()
+      .extent([[0, 0], [W, H]])
+      .on('end', ({ selection }) => {
+        if (!selection) {
+          brushYears  = null;
+          brushedData = null;
+          updateAllCharts(allData);
+          applyMapHighlight();
+          return;
+        }
+        const y0 = Math.round(xSc.invert(selection[0]));
+        const y1 = Math.round(xSc.invert(selection[1]));
+        brushYears  = [y0, y1];
+        brushedData = allData.filter(d => d.year !== null && d.year >= y0 && d.year <= y1);
+        updateAllCharts(brushedData);
+        applyMapHighlight();
+      });
+
+    brushG.call(brush);
+  }
+
+  // ============================================================
+  // SECTION 4.4 — DEFENSE TYPE BAR CHART
+  // ============================================================
+  function renderDefenseTypeChart(data) {
+    drawDefenseTypeChart(data);
+
+    document.querySelectorAll('.sort-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentSort = btn.dataset.sort;
+        drawDefenseTypeChart(brushedData || allData);
+      });
+    });
+  }
+
+  function drawDefenseTypeChart(data) {
+    const ctr    = document.getElementById('defense-container');
+    const margin = { top: 4, right: 50, bottom: 6, left: 115 };
+    const W      = Math.max((ctr.clientWidth || 280) - margin.left - margin.right, 60);
+
+    const counts = d3.rollup(data, v => v.length, d => d.defenseType);
+    let items = Array.from(counts, ([key, value]) => ({ key, value }))
+      .sort((a, b) => b.value - a.value).slice(0, 10);
+
+    if (currentSort === 'count-asc') items.sort((a, b) => a.value - b.value);
+    if (currentSort === 'alpha')     items.sort((a, b) => a.key.localeCompare(b.key));
+
+    const total = data.length;
+    const barH  = 28, pad = 8;
+    const H     = items.length * (barH + pad) - pad;
+
+    let svg = d3.select('#defense-container svg');
+    if (svg.empty()) {
+      svg = d3.select('#defense-container').append('svg')
+        .attr('preserveAspectRatio', 'xMidYMid meet')
+        .style('width', '100%').style('height', 'auto');
+      svg.append('g').attr('class', 'chart-g')
+        .attr('transform', `translate(${margin.left},${margin.top})`);
+    }
+    svg.attr('viewBox', `0 0 ${W + margin.left + margin.right} ${H + margin.top + margin.bottom}`);
+    const g = svg.select('.chart-g');
+
+    const xSc     = d3.scaleLinear().domain([0, d3.max(items, d => d.value) || 1]).range([0, W]);
+    const ySc     = d3.scaleBand().domain(items.map(d => d.key)).range([0, H]).padding(0.22);
+    const colorSc = d3.scaleOrdinal().domain(items.map(d => d.key)).range(ORDINAL_COLORS);
+
+    // ENTER / UPDATE / EXIT — bars
+    const bars = g.selectAll('.def-bar').data(items, d => d.key);
+
+    // EXIT
+    bars.exit().transition().duration(600).attr('width', 0).remove();
+
+    // ENTER
+    const bEnter = bars.enter().append('rect').attr('class', 'def-bar')
+      .attr('y', d => ySc(d.key)).attr('height', ySc.bandwidth())
+      .attr('x', 0).attr('width', 0).style('cursor', 'pointer')
+      .on('click', (event, d) => { event.stopPropagation(); toggleFilter('defenseType', d.key); })
+      .on('mouseover', (event, d) => showTip(event, [
+        [d.key, d.value + ' losses'],
+        ['Share', (total > 0 ? (d.value / total * 100).toFixed(1) : 0) + '%'],
+      ]))
+      .on('mousemove', moveTip).on('mouseout', hideTip);
+
+    // UPDATE (merge ENTER + existing)
+    bEnter.merge(bars).transition().duration(600)
+      .attr('y',      d => ySc(d.key))
+      .attr('height', ySc.bandwidth())
+      .attr('width',  d => xSc(d.value))
+      .attr('fill',   d => colorSc(d.key))
+      .attr('opacity', d => activeFilter === null || (activeFilter.field === 'defenseType' && d.key === activeFilter.value) ? 1 : 0.25);
+
+    // ENTER / UPDATE / EXIT — count labels
+    const lbls = g.selectAll('.def-lbl').data(items, d => d.key);
+    lbls.exit().transition().duration(600).attr('opacity', 0).remove();
+    lbls.enter().append('text').attr('class', 'def-lbl')
+      .attr('fill', 'var(--color-muted)').attr('font-size', '10px').attr('opacity', 0)
+      .merge(lbls).transition().duration(600)
+        .attr('y', d => ySc(d.key) + ySc.bandwidth() / 2 + 4)
+        .attr('x', d => xSc(d.value) + 5)
+        .attr('opacity', 1)
+        .text(d => d.value);
+
+    // Y axis (category names)
+    let yAx = g.select('.def-y');
+    if (yAx.empty()) yAx = g.append('g').attr('class', 'axis def-y');
+    yAx.transition().duration(600).call(d3.axisLeft(ySc).tickSize(0))
+      .selectAll('text')
+        .attr('fill', 'var(--color-text)').style('font-size', '13px').attr('dx', '-4');
+    yAx.select('.domain').remove();
+  }
+
+  // ============================================================
+  // SECTION 4.5 — AIRCRAFT TYPE STACKED BAR
+  // ============================================================
+  function renderAircraftTypeChart(data) {
+    // Build color legend (DOM-based)
+    const legend = document.getElementById('aircraft-legend');
+    STATUSES.forEach(s => {
+      const span = document.createElement('span');
+      const swatch = document.createElement('span');
+      swatch.className = 'legend-swatch';
+      swatch.style.backgroundColor = STATUS_COLORS[s];
+      span.appendChild(swatch);
+      span.appendChild(document.createTextNode(s));
+      legend.appendChild(span);
+    });
+
+    const ctr    = document.getElementById('aircraft-container');
+    const margin = { top: 8, right: 8, bottom: 24, left: 36 };
+    const W      = Math.max((ctr.clientWidth || 280) - margin.left - margin.right, 60);
+    const H      = 360 - margin.top - margin.bottom;
+
+    const svg = d3.select('#aircraft-container').append('svg')
+      .attr('viewBox', `0 0 ${W + margin.left + margin.right} ${H + margin.top + margin.bottom}`)
+      .attr('preserveAspectRatio', 'xMidYMid meet')
+      .style('width', '100%').style('height', 'auto');
+    svg.append('g').attr('class', 'chart-g')
+      .attr('transform', `translate(${margin.left},${margin.top})`);
+
+    drawAircraftTypeChart(data);
+  }
+
+  function drawAircraftTypeChart(data) {
+    const ctr = document.getElementById('aircraft-container');
+    const svg = d3.select('#aircraft-container svg');
+    if (svg.empty()) return;
+
+    const vb     = svg.attr('viewBox').split(' ').map(Number);
+    const margin = { top: 8, right: 8, bottom: 24, left: 36 };
+    const W      = vb[2] - margin.left - margin.right;
+    const H      = vb[3] - margin.top  - margin.bottom;
+    const g      = svg.select('.chart-g');
+
+    // Top 12 aircraft by total losses (using normalized aircraftType)
+    const totals = d3.rollup(data, v => v.length, d => d.aircraftType);
+    const top12  = Array.from(totals, ([k, v]) => ({ k, v }))
+      .sort((a, b) => b.v - a.v).slice(0, 10).map(d => d.k);
+
+    // Build stacked data: one object per aircraft type
+    const stackData = top12.map(ac => {
+      const rows = data.filter(d => d.aircraftType === ac);
+      const obj  = { key: ac };
+      STATUSES.forEach(s => { obj[s] = rows.filter(r => r.pilotStatus === s).length; });
+      return obj;
+    });
+
+    const stacked = d3.stack().keys(STATUSES)(stackData);
+
+    const xSc  = d3.scaleBand().domain(top12).range([0, W]).padding(0.22);
+    const maxV = d3.max(stackData, row => STATUSES.reduce((s, k) => s + row[k], 0)) || 1;
+    const ySc  = d3.scaleLinear().domain([0, maxV * 1.1]).range([H, 0]).nice();
+
+    // ENTER / UPDATE / EXIT — one <g> layer per pilot status
+    const layers = g.selectAll('.ac-layer').data(stacked, d => d.key);
+
+    // EXIT layers
+    layers.exit().remove();
+
+    // ENTER + UPDATE layers
+    const allLayers = layers.enter().append('g').attr('class', 'ac-layer')
+      .merge(layers).attr('fill', d => STATUS_COLORS[d.key]);
+
+    allLayers.each(function(layerDat) {
+      const layer  = d3.select(this);
+      const status = layerDat.key;
+
+      // ENTER / UPDATE / EXIT — segments within this layer
+      const segs = layer.selectAll('rect').data(layerDat, d => d.data.key);
+
+      // EXIT segments
+      segs.exit().transition().duration(600).attr('y', H).attr('height', 0).remove();
+
+      // ENTER segments
+      const sEnter = segs.enter().append('rect')
+        .attr('x',      d => xSc(d.data.key))
+        .attr('width',  xSc.bandwidth())
+        .attr('y', H).attr('height', 0)
+        .style('cursor', 'pointer')
+        .on('click', (event, d) => {
+          event.stopPropagation();
+          toggleFilter('aircraftType', d.data.key);
+          showDrilldown(event, d.data);
+        })
+        .on('mouseover', (event, d) => {
+          const tot = STATUSES.reduce((s, k) => s + d.data[k], 0);
+          showTip(event, [
+            [d.data.key, ''],
+            [status, d.data[status] + ' (' + (tot > 0 ? (d.data[status]/tot*100).toFixed(1) : 0) + '%)'],
+          ]);
+        })
+        .on('mousemove', moveTip).on('mouseout', hideTip);
+
+      // UPDATE (merge)
+      sEnter.merge(segs).transition().duration(600)
+        .attr('x',      d => xSc(d.data.key))
+        .attr('width',  xSc.bandwidth())
+        .attr('y',      d => ySc(d[1]))
+        .attr('height', d => Math.max(0, ySc(d[0]) - ySc(d[1])))
+        .attr('opacity', d =>
+          activeFilter === null || (activeFilter.field === 'aircraftType' && d.data.key === activeFilter.value)
+            ? 1 : 0.25);
+    });
+
+    // X axis
+    let xAx = g.select('.ac-x');
+    if (xAx.empty()) xAx = g.append('g').attr('class', 'axis ac-x').attr('transform', `translate(0,${H})`);
+    xAx.transition().duration(600).call(d3.axisBottom(xSc).tickSize(0))
+      .selectAll('text')
+        .attr('transform', null).attr('text-anchor', 'middle')
+        .attr('dx', '0').attr('dy', '1.0em')
+        .attr('fill', 'var(--color-muted)').style('font-size', '16px');
+    xAx.select('.domain').remove();
+
+    // Y axis
+    let yAx = g.select('.ac-y');
+    if (yAx.empty()) yAx = g.append('g').attr('class', 'axis ac-y');
+    yAx.transition().duration(600).call(d3.axisLeft(ySc).ticks(4));
+  }
+
+  // Drill-down floating panel — DOM methods only
+  function showDrilldown(event, rowData) {
+    const panel = document.getElementById('drilldown-panel');
+    panel.textContent = '';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'close-btn';
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      panel.style.display = 'none';
+    });
+    panel.appendChild(closeBtn);
+
+    const h3 = document.createElement('h3');
+    h3.textContent = rowData.key;
+    panel.appendChild(h3);
+
+    const total = STATUSES.reduce((s, k) => s + (rowData[k] || 0), 0);
+    const table = document.createElement('table');
+
+    STATUSES.forEach(s => {
+      const cnt = rowData[s] || 0;
+      const pct = total > 0 ? (cnt / total * 100).toFixed(1) : '0.0';
+      const tr  = document.createElement('tr');
+
+      const td1 = document.createElement('td');
+      td1.textContent = s;
+      td1.style.color = STATUS_COLORS[s];
+
+      const td2 = document.createElement('td');
+      td2.textContent = cnt;
+
+      const td3 = document.createElement('td');
+      td3.textContent = pct + '%';
+
+      tr.append(td1, td2, td3);
+      table.appendChild(tr);
+    });
+
+    const trTot = document.createElement('tr');
+    trTot.className = 'total-row';
+    const ttd1 = document.createElement('td'); ttd1.textContent = 'Total';
+    const ttd2 = document.createElement('td'); ttd2.textContent = total;
+    const ttd3 = document.createElement('td');
+    trTot.append(ttd1, ttd2, ttd3);
+    table.appendChild(trTot);
+
+    panel.appendChild(table);
+    panel.style.display = 'block';
+    panel.style.left = Math.min(event.clientX + 10, window.innerWidth  - 230) + 'px';
+    panel.style.top  = Math.min(event.clientY - 10, window.innerHeight - 220) + 'px';
+  }
+
+  // ============================================================
+  // SECTION 4.6 — PILOT STATUS CHART
+  // ============================================================
+  function renderPilotStatusChart(data) {
+    drawHBar('pilot-container', 'pilot-bar', data,
+      d => d.pilotStatus,
+      d => STATUS_COLORS[d.key] || '#7F8C8D',
+      160, true, 'pilotStatus'
+    );
+  }
+
+  // ============================================================
+  // SECTION 4.7 — LOSS COUNTRY VERTICAL BAR CHART WITH FLAGS
+  // ============================================================
+  const FLAG_FILLS = {
+    'South Vietnam': 'url(#flag-svn)',
+    'North Vietnam': 'url(#flag-nvn)',
+    'Laos':          'url(#flag-laos)',
+    'Thailand':      'url(#flag-tha)',
+    'Cambodia':      'url(#flag-khm)',
+    'Over Sea':      '#1A6FA8',
+    'Hainan':        '#DE2910',
+    'Unknown':       '#5D6D7E',
+  };
+
+  function renderCountryChartVertical(data) {
+    const ctr    = document.getElementById('country-container');
+    const margin = { top: 10, right: 16, bottom: 28, left: 38 };
+    const W      = Math.max((ctr.clientWidth || 200) - margin.left - margin.right, 60);
+    const H      = Math.round(W * 1.4);
+
+    const svg = d3.select('#country-container').append('svg')
+      .attr('viewBox', `0 0 ${W + margin.left + margin.right} ${H + margin.top + margin.bottom}`)
+      .attr('preserveAspectRatio', 'xMidYMid meet')
+      .style('width', '100%').style('height', 'auto');
+
+    // ── Flag patterns (all oriented with long edge vertical = flag rotated 90°) ──
+    const defs = svg.append('defs');
+
+    // South Vietnam: gold bg + 3 vertical red stripes
+    const pSvn = defs.append('pattern')
+      .attr('id', 'flag-svn').attr('patternUnits', 'objectBoundingBox')
+      .attr('patternContentUnits', 'objectBoundingBox').attr('width', 1).attr('height', 1);
+    pSvn.append('rect').attr('width', 1).attr('height', 1).attr('fill', '#FADA5E');
+    [0.30, 0.465, 0.63].forEach(x =>
+      pSvn.append('rect').attr('x', x).attr('y', 0).attr('width', 0.07).attr('height', 1).attr('fill', '#CE1126')
+    );
+
+    // North Vietnam: red bg + yellow 5-point star — rotated 180° and scaled to 75%
+    const pNvn = defs.append('pattern')
+      .attr('id', 'flag-nvn').attr('patternUnits', 'objectBoundingBox')
+      .attr('patternContentUnits', 'objectBoundingBox').attr('width', 1).attr('height', 1);
+    pNvn.append('rect').attr('width', 1).attr('height', 1).attr('fill', '#DA251D');
+    pNvn.append('polygon')
+      .attr('points', '0.5,0.23 0.565,0.411 0.757,0.417 0.605,0.534 0.659,0.718 0.5,0.61 0.341,0.718 0.395,0.534 0.243,0.417 0.435,0.411')
+      .attr('transform', 'translate(0.5,0.5) rotate(-90) scale(0.50) translate(-0.5,-0.5)')
+      .attr('fill', '#FFCD00');
+
+    // Laos: vertical red–blue–red stripes + white circle (hand-drawn, no CDN distortion)
+    const pLaos = defs.append('pattern')
+      .attr('id', 'flag-laos').attr('patternUnits', 'objectBoundingBox')
+      .attr('patternContentUnits', 'objectBoundingBox').attr('width', 1).attr('height', 1);
+    pLaos.append('rect').attr('width', 1).attr('height', 1).attr('fill', '#CE1126');
+    pLaos.append('rect').attr('x', 0.25).attr('y', 0).attr('width', 0.5).attr('height', 1).attr('fill', '#002868');
+    pLaos.append('circle').attr('cx', 0.5).attr('cy', 0.5).attr('r', 0.12).attr('fill', 'white');
+
+    // Thailand: vertical red–white–blue–white–red stripes (hand-drawn, 1:1:2:1:1 proportions)
+    const pTha = defs.append('pattern')
+      .attr('id', 'flag-tha').attr('patternUnits', 'objectBoundingBox')
+      .attr('patternContentUnits', 'objectBoundingBox').attr('width', 1).attr('height', 1);
+    pTha.append('rect').attr('width', 1).attr('height', 1).attr('fill', '#A51931');
+    pTha.append('rect').attr('x', 0.167).attr('y', 0).attr('width', 0.167).attr('height', 1).attr('fill', '#F4F5F8');
+    pTha.append('rect').attr('x', 0.333).attr('y', 0).attr('width', 0.333).attr('height', 1).attr('fill', '#2D2A4A');
+    pTha.append('rect').attr('x', 0.667).attr('y', 0).attr('width', 0.167).attr('height', 1).attr('fill', '#F4F5F8');
+
+    // Cambodia: CDN image rotated –90° in OBB space so long edge runs vertically
+    const pKhm = defs.append('pattern')
+      .attr('id', 'flag-khm').attr('patternUnits', 'objectBoundingBox')
+      .attr('patternContentUnits', 'objectBoundingBox').attr('width', 1).attr('height', 1);
+    pKhm.append('rect').attr('width', 1).attr('height', 1).attr('fill', '#0A3480');
+    pKhm.append('image').attr('href', 'https://flagcdn.com/kh.svg')
+      .attr('x', 0).attr('y', 0).attr('width', 1).attr('height', 1)
+      .attr('preserveAspectRatio', 'xMidYMid slice')
+      .attr('transform', 'rotate(-90, 0.5, 0.5)');
+
+    svg.append('g').attr('class', 'chart-g')
+      .attr('transform', `translate(${margin.left},${margin.top})`);
+
+    drawVBar(data);
+  }
+
+  function drawVBar(data) {
+    const svg = d3.select('#country-container svg');
+    if (svg.empty()) return;
+
+    const vb     = svg.attr('viewBox').split(' ').map(Number);
+    const margin = { top: 10, right: 16, bottom: 28, left: 38 };
+    const W      = vb[2] - margin.left - margin.right;
+    const H      = vb[3] - margin.top  - margin.bottom;
+    const g      = svg.select('.chart-g');
+
+    const counts = d3.rollup(data, v => v.length, d => d.lossCountry);
+    const items  = Array.from(counts, ([key, value]) => ({ key, value }))
+      .sort((a, b) => b.value - a.value);
+
+    const total = data.length;
+    const xSc   = d3.scaleBand().domain(items.map(d => d.key)).range([0, W]).padding(0.22);
+    const ySc   = d3.scaleLinear()
+      .domain([0, (d3.max(items, d => d.value) || 1) * 1.1])
+      .range([H, 0]).nice();
+
+    // ENTER / UPDATE / EXIT — bars
+    const bars = g.selectAll('.country-bar').data(items, d => d.key);
+
+    bars.exit().transition().duration(600).attr('y', H).attr('height', 0).remove();
+
+    const bEnter = bars.enter().append('rect').attr('class', 'country-bar')
+      .attr('x', d => xSc(d.key)).attr('width', xSc.bandwidth())
+      .attr('y', H).attr('height', 0)
+      .style('cursor', 'pointer')
+      .on('click', (event, d) => { event.stopPropagation(); toggleFilter('lossCountry', d.key); })
+      .on('mouseover', (event, d) => showTip(event, [
+        [d.key, d.value + ' losses'],
+        ['Share', (total > 0 ? (d.value / total * 100).toFixed(1) : 0) + '%'],
+      ]))
+      .on('mousemove', moveTip).on('mouseout', hideTip);
+
+    bEnter.merge(bars).transition().duration(600)
+      .attr('x',      d => xSc(d.key))
+      .attr('width',  xSc.bandwidth())
+      .attr('y',      d => ySc(d.value))
+      .attr('height', d => H - ySc(d.value))
+      .attr('fill',   d => FLAG_FILLS[d.key] || '#5D6D7E')
+      .attr('opacity', d =>
+        activeFilter === null || (activeFilter.field === 'lossCountry' && d.key === activeFilter.value)
+          ? 1 : 0.25);
+
+    // X axis — rotated labels
+    let xAx = g.select('.country-x');
+    if (xAx.empty()) xAx = g.append('g').attr('class', 'axis country-x')
+      .attr('transform', `translate(0,${H})`);
+    xAx.transition().duration(600).call(d3.axisBottom(xSc).tickSize(0))
+      .selectAll('text')
+        .attr('transform', null).attr('text-anchor', 'middle')
+        .attr('dx', '0').attr('dy', '1.4em')
+        .attr('fill', 'var(--color-text)').style('font-size', '13px');
+    xAx.select('.domain').remove();
+
+    // Y axis
+    let yAx = g.select('.country-y');
+    if (yAx.empty()) yAx = g.append('g').attr('class', 'axis country-y');
+    yAx.transition().duration(600).call(d3.axisLeft(ySc).ticks(5));
+  }
+
+  // Shared horizontal bar renderer used by Pilot Status and Country charts.
+  // highlightField: if provided (e.g. 'pilotStatus'), bars in this chart respond to
+  // activeFilter — matching bar stays bright, others dim. Also adds click handler.
+  function drawHBar(ctrId, barClass, data, keyFn, colorFn, totalH, showPct, highlightField = null) {
+    const ctr    = document.getElementById(ctrId);
+    const margin = { top: 4, right: 65, bottom: 6, left: 115 };
+    const W      = Math.max((ctr.clientWidth || 280) - margin.left - margin.right, 60);
+
+    const counts = d3.rollup(data, v => v.length, keyFn);
+    const items  = Array.from(counts, ([key, value]) => ({ key, value }))
+      .sort((a, b) => b.value - a.value);
+
+    const total = data.length;
+    const barH  = 50, pad = 10;
+    const H     = Math.max(items.length * (barH + pad) - pad, 10);
+
+    let svg = d3.select(`#${ctrId} svg`);
+    if (svg.empty()) {
+      svg = d3.select(`#${ctrId}`).append('svg')
+        .attr('preserveAspectRatio', 'xMidYMid meet')
+        .style('width', '100%').style('height', 'auto');
+      svg.append('g').attr('class', 'chart-g')
+        .attr('transform', `translate(${margin.left},${margin.top})`);
+    }
+    svg.attr('viewBox', `0 0 ${W + margin.left + margin.right} ${H + margin.top + margin.bottom}`);
+    const g = svg.select('.chart-g');
+
+    const xSc = d3.scaleLinear().domain([0, d3.max(items, d => d.value) || 1]).range([0, W]);
+    const ySc = d3.scaleBand().domain(items.map(d => d.key)).range([0, H]).padding(0.18);
+
+    // ENTER / UPDATE / EXIT — bars
+    const bars = g.selectAll(`.${barClass}`).data(items, d => d.key);
+
+    // EXIT
+    bars.exit().transition().duration(600).attr('width', 0).remove();
+
+    // ENTER
+    const bEnter = bars.enter().append('rect').attr('class', barClass)
+      .attr('y', d => ySc(d.key)).attr('height', ySc.bandwidth())
+      .attr('x', 0).attr('width', 0);
+
+    if (highlightField) {
+      bEnter.style('cursor', 'pointer')
+        .on('click', (event, d) => { event.stopPropagation(); toggleFilter(highlightField, d.key); });
+    }
+
+    // UPDATE (merge)
+    bEnter.merge(bars).transition().duration(600)
+      .attr('y',      d => ySc(d.key))
+      .attr('height', ySc.bandwidth())
+      .attr('width',  d => xSc(d.value))
+      .attr('fill',   (d, i) => colorFn(d, i))
+      .attr('opacity', d => {
+        if (activeFilter === null) return 1;
+        if (highlightField && activeFilter.field === highlightField && d.key === activeFilter.value) return 1;
+        return 0.25;
+      });
+
+    // ENTER / UPDATE / EXIT — value labels
+    const lblClass = barClass + '-lbl';
+    const lbls = g.selectAll(`.${lblClass}`).data(items, d => d.key);
+    lbls.exit().transition().duration(600).attr('opacity', 0).remove();
+    lbls.enter().append('text').attr('class', lblClass)
+      .attr('fill', 'var(--color-muted)').style('font-size', '13px').attr('opacity', 0)
+      .merge(lbls).transition().duration(600)
+        .attr('y', d => ySc(d.key) + ySc.bandwidth() / 2 + 4)
+        .attr('x', d => xSc(d.value) + 5)
+        .attr('opacity', 1)
+        .text(d => showPct
+          ? d.value + ' (' + (total > 0 ? (d.value / total * 100).toFixed(1) : 0) + '%)'
+          : d.value);
+
+    // Y axis (category labels)
+    let yAx = g.select(`.${barClass}-y`);
+    if (yAx.empty()) yAx = g.append('g').attr('class', `axis ${barClass}-y`);
+    yAx.transition().duration(600).call(d3.axisLeft(ySc).tickSize(0))
+      .selectAll('text')
+        .attr('fill', 'var(--color-text)').style('font-size', '13px').attr('dx', '-4');
+    yAx.select('.domain').remove();
+  }
+
+  // ============================================================
+  // SECTION 5.1 — CROSS-CHART FILTERING (brush-driven)
+  // ============================================================
+  function updateAllCharts(filtered) {
+    updateStats(filtered);
+    drawDefenseTypeChart(filtered);
+    drawAircraftTypeChart(filtered);
+    drawHBar('pilot-container',   'pilot-bar',   filtered, d => d.pilotStatus, d => STATUS_COLORS[d.key] || '#7F8C8D',            160, true,  'pilotStatus');
+    drawVBar(filtered);
+  }
+
+  // ============================================================
+  // SECTION 5.2 — CLICK-TO-HIGHLIGHT (bars + map dots)
+  // ============================================================
+
+  // Toggle the active filter; same click clears it.
+  function toggleFilter(field, value) {
+    activeFilter = (activeFilter && activeFilter.field === field && activeFilter.value === value)
+      ? null
+      : { field, value };
+    updateAllCharts(brushedData || allData);
+    applyMapHighlight();
+  }
+
+  // Single source of truth for dot opacity — combines year-range and category filters.
+  function computeDotOpacity(d) {
+    if (brushYears !== null && (d.year < brushYears[0] || d.year > brushYears[1])) return 0;
+    if (activeFilter === null) return 0.7;
+    return d[activeFilter.field] === activeFilter.value ? 1.0 : 0.08;
+  }
+
+  // Re-apply opacity to all rendered dots (called when brush or category filter changes).
+  function applyMapHighlight() {
+    d3.select('#map-container .dots').selectAll('circle')
+      .transition().duration(400)
+      .attr('opacity', d => computeDotOpacity(d));
+  }
+
+  // Deselect highlight and close drilldown on outside click
+  document.addEventListener('click', e => {
+    const inChart = e.target.closest(
+      '#defense-container, #aircraft-container, #pilot-container, #country-container'
+    );
+    if (!inChart) {
+      const panel = document.getElementById('drilldown-panel');
+      if (panel) panel.style.display = 'none';
+      if (activeFilter !== null) {
+        activeFilter = null;
+        updateAllCharts(brushedData || allData);
+        applyMapHighlight();
+      }
+    }
+  });
+
+  // ============================================================
+  // ENTRY POINT
+  // ============================================================
+  async function main() {
+    try {
+      allData = await loadAndClean();
+      updateStats(allData);
+      renderMap(allData);
+      renderLineChart(allData);
+      renderDefenseTypeChart(allData);
+      renderAircraftTypeChart(allData);
+      renderPilotStatusChart(allData);
+      renderCountryChartVertical(allData);
+    } catch (err) {
+      console.error('Initialization failed:', err);
+      const msg = document.createElement('p');
+      msg.style.cssText = 'color:#C0392B;padding:20px;font-family:monospace;';
+      msg.textContent = 'Error: ' + err.message + ' — Run via local HTTP server (python -m http.server 8080)';
+      document.body.prepend(msg);
+    }
+  }
+
+  main();
+  </script>
+</body>
+</html>
