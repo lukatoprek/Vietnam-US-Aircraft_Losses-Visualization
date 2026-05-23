@@ -4,7 +4,7 @@ Between 1964 and 1973, the United States Air Force conducted over 2.7 million bo
 
 ## ✨ Features
 
-- **Interactive map** - Explore loss locations across Vietnam
+- **Interactive map** - Explore loss locations across Indochina
 - **Real-time filtering** - Filter by year, aircraft type, and cause
 - **Detailed records** - Access comprehensive loss data for each incident
 - **Historical accuracy** - Data sourced from verified records
@@ -20,7 +20,7 @@ Between 1964 and 1973, the United States Air Force conducted over 2.7 million bo
 
 This visualization uses aircraft loss data from the [Vietnam War Losses Dataset](https://www.kaggle.com/datasets/thedevastator/vietnam-war-losses?select=Vietnam_USAF_Losses_Cleaned_Data.csv) on Kaggle.
 
-**⚠️ Disclaimer:** This visualization and dataset cover only **1,540 of the 3,744 fixed-wing aircraft losses** recorded by the U.S. Air Force during the Vietnam War (~41% coverage). The dataset focuses on verified and documented USAF losses and does not represent the complete historical record of all aircraft lost during the conflict.
+**⚠️ Disclaimer:** This visualization and dataset cover only **1,540 of the 3,744 fixed-wing aircraft losses** recorded by the U.S. forces across all branches during the Vietnam War (~41% coverage). The dataset focuses on verified and documented USAF losses and does not represent the complete historical record of all aircraft lost during the conflict.
 
 ## 🌐 View the Project
 
