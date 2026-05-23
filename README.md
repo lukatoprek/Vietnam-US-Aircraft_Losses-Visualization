@@ -1,6 +1,6 @@
 # ✈️ Vietnam-US Aircraft Losses Visualization
 
-Between 1964 and 1973, the United States Air Force conducted over 2.7 million bombing sorties over Indochina, making it the most intensive air campaign in history—yet thousands of aircraft never returned. This interactive visualization maps the locations and circumstances of verified USAF losses during the Vietnam War.
+Between 1964 and 1973, the United States Air Force conducted over 2.7 million bombing sorties over Indochina, making it the most intensive air campaign in history with thousands of aircraft and pilots never returning home. This interactive visualization maps the locations and circumstances of verified USAF losses during the Vietnam War.
 
 ## ✨ Features
 
