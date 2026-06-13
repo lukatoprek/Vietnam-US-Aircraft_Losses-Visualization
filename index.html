@@ -503,7 +503,7 @@
     g.selectAll('.yr-dot').data(pts).enter().append('circle')
       .attr('class', 'yr-dot')
       .attr('cx', d => xSc(d.year)).attr('cy', d => ySc(d.count))
-      .attr('r', 4).attr('fill', '#A52515')
+      .attr('r', 5).attr('fill', '#A52515')
       .attr('stroke', '#D4C6A6').attr('stroke-width', 1.5)
       .on('mouseover', (event, d) => showTipText(event, `${d.year} — ${d.count} losses`))
       .on('mousemove', moveTip)
@@ -539,7 +539,7 @@
       });
 
     brushG.call(brush);
-    g.selectAll('yr-dot').raise();
+    g.selectAll('.yr-dot').raise();
   }
 
   // ============================================================
